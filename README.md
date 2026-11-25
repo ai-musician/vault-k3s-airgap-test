@@ -5,36 +5,38 @@ access**, the way software is delivered to an appliance or an air-gapped custome
 
 One command builds the package, creates a throwaway Ubuntu VM cut off from the internet, copies the package to it
 over SFTP, installs k3s and Vault from it, tests Vault, uninstalls it, checks nothing was left behind, and deletes the
-VM:
+VM. The VM runs on your machine (Multipass, free) or on Google Cloud (about a cent a run):
 
 ```bash
-scripts/appliance.sh all
+scripts/appliance.sh multipass all
+scripts/appliance.sh gcp all
 ```
 
 ## What happens
 
 ```
-build machine (macOS or Linux)                       appliance VM (Ubuntu 26.04, Multipass, no internet)
+build machine (macOS or Linux)                       appliance VM (Ubuntu 26.04, no internet)
 
-1. bundle   k3s binary + install script               
+1. bundle   k3s binary + install script
             k3s system images (air-gap .tar.zst)
             Helm binary
             Vault Helm chart (.tgz)
             Vault + vault-k8s images (.tar)
             install.sh, uninstall.sh, values, SHA256SUMS
-                                                      2. vm       fresh VM, outbound internet blocked
+                                                      2. vm       multipass: Multipass VM, iptables blocks egress
+                                                                  gcp: Terraform, VPC firewall denies egress
 3. ship     lftp mirror (or sftp)  ───────────────►   ~/bundle/   checked against SHA256SUMS
 4. install  ssh: sudo bundle/install.sh  ─────────►   k3s air-gap install
                                                       k3s ctr images import vault-images.tar
                                                       helm install vault ./vault-chart.tgz
 5. test     pytest tests/installed  ──── HTTP :30820 ─► Vault API, ── kubectl :6443 ─► k3s
 6. uninstall ssh: sudo bundle/uninstall.sh, then pytest tests/uninstalled
-7. destroy  multipass delete --purge
+7. destroy  multipass delete --purge | terraform destroy
 ```
 
 `all` deletes the VM even when a step fails or you press Ctrl-C, still runs the uninstall checks when an install test
 fails, and exits non-zero if any test failed. Every step can also be run on its own (`scripts/appliance.sh` with no
-argument lists them), which is how you debug: `vm`, `ship`, `install`, then `ssh` in and look.
+arguments lists them), which is how you debug: `vm`, `ship`, `install`, then `ssh` in and look.
 
 ## What the tests check
 
@@ -66,24 +68,45 @@ makes 5 of the 7 fail: the `vault` namespace, a PersistentVolume still holding V
 binary and the bundle are all left behind. Helm does remove the webhook and cluster roles, so that check passes, as
 it should.
 
-## A run
+## Runs
 
-On a MacBook Air (Apple silicon, 16 GB), Multipass 1.16, Ubuntu 26.04, k3s v1.37.2+k3s1, Vault 2.0.4:
+Both from a MacBook Air (Apple silicon, 16 GB) on a home connection; Ubuntu 26.04, k3s v1.37.2+k3s1, Vault 2.0.4:
 
-| Step | Time |
-|---|---|
-| `bundle` (first time; later runs reuse it) | about 1 minute on a home connection, 473 MB |
-| `vm` | under 2 minutes the first time (image download), well under 1 minute after |
-| `ship` (lftp) | 9 seconds |
-| `install` | 30 seconds |
-| `test`, then `uninstall` | 15 seconds, 20 seconds |
-| `all`, with the bundle and Ubuntu image already cached | **1 minute 54 seconds, 14 tests passed** |
+| | `multipass all` | `gcp all` |
+|---|---|---|
+| VM | Multipass, arm64, 2 CPUs, 4 GB | e2-medium in us-central1-a, amd64 |
+| Air gap | iptables on the VM | VPC firewall egress deny |
+| Create the VM | under 1 minute (2 the first time, image download) | about 1.5 minutes (5 resources) |
+| Ship 470-510 MB | 9 seconds | a few minutes, depends on your upload speed |
+| Install, test, uninstall | about 1 minute | about 1.5 minutes |
+| Delete | seconds | about 2 minutes |
+| **Total, bundle already built** | **2 minutes, 14 tests passed** | **7.5 minutes, 14 tests passed** |
+| Cost | free | about a cent |
+
+After the gcp run nothing is left in the project: no instance, disk, address, network or firewall rule.
+
+## Google Cloud
+
+`infra/gcp/main.tf` makes one VM in its own VPC network, so its firewall rules touch nothing else in the project:
+
+- **In:** ssh, the Kubernetes API (6443) and Vault's NodePort (30820), from your public IP only.
+- **Out: nothing.** An egress deny rule for `0.0.0.0/0` is the air gap. The firewall is stateful, so replies to the
+  connections above still flow, and the metadata server (DNS, the ssh key) is always reachable.
+- **No service account** on the VM: it has nothing to call, so it gets no Google Cloud identity.
+- A throwaway ssh key in the instance metadata, OS Login off.
+- k3s gets `--tls-san <public IP>`, because the tests reach the API at an address the VM itself doesn't know.
+
+The VM is x86 (amd64), so the bundle is built for amd64: an Apple silicon Mac building for a different
+architecture, as a real release would. For an Arm VM: `ARCH=arm64 TF_VAR_machine_type=t2a-standard-2`.
+
+Needs Terraform and gcloud with `gcloud auth application-default login`, the Compute Engine API enabled, and a
+project (default: your gcloud project, or `TF_VAR_project_id`). The Terraform state stays in `infra/gcp/`
+(git-ignored), so run `destroy` from the same checkout.
 
 ## Design choices
 
-- **The air gap is real.** Outbound traffic from the VM is blocked with iptables except to private networks, and a
-  test proves it. Only the host's own traffic is blocked (that's where k3s and containerd would download from), not
-  pods' traffic.
+- **The air gap is real** and a test proves it. On Multipass only the host's own traffic is blocked (that's where k3s
+  and containerd would download from), not pods' traffic. On Google Cloud the network blocks everything.
 - **Everything is pinned and checked.** Versions are in `versions.env`. Downloads are checked against the upstream
   checksums (k3s, Helm), the bundle carries a `SHA256SUMS` for every file, and it's checked again on the appliance
   after the copy.
@@ -91,20 +114,22 @@ On a MacBook Air (Apple silicon, 16 GB), Multipass 1.16, Ubuntu 26.04, k3s v1.37
   `IfNotPresent` with exact tags. The injector's test app reuses the Vault image so it needs no image of its own.
 - **The install and uninstall scripts are part of the package**, so the thing tested is the thing delivered. Both
   are safe to run twice.
+- **Only the VM step differs between targets.** Shipping, installing and testing need nothing but ssh, so another
+  cloud is one more Terraform folder and two small functions.
 - **Vault is initialized with a single unseal key** stored in `.vm/` (git-ignored). Fine for a throwaway VM, wrong
   anywhere else. Real installs split the key (Shamir) or auto-unseal with a cloud KMS.
 
 ## Requirements
 
-- macOS or Linux with [Multipass](https://multipass.run), Docker, curl, jq and Python 3.10+
+- macOS or Linux with Docker, curl, jq and Python 3.10+
 - `lftp` (`brew install lftp`) for the copy; without it the script uses `sftp`
-- About 6 GB free: the VM takes 2 CPUs, 4 GB of memory and a 15 GB disk; the bundle is about 470 MB
-
-The bundle is built for the build machine's architecture (arm64 on Apple silicon), which is what Multipass runs.
-Set `ARCH=amd64` to build one for an x86 appliance.
+- multipass: [Multipass](https://multipass.run) and about 6 GB free (2 CPUs, 4 GB of memory, a 15 GB disk)
+- gcp: Terraform and gcloud, as above
+- Bundles are kept per architecture in `bundle/linux-<arch>/` (about 500 MB each, git-ignored)
 
 ## Not covered yet
 
 - TLS and mTLS on Vault's listener (it's plain HTTP inside the VM)
 - High availability (Raft with three replicas) and an upgrade from one package version to the next
+- AWS and Azure VMs
 - Running the whole flow in CI: GitHub's Linux runners could be the appliance, with no VM

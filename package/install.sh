@@ -29,8 +29,10 @@ if ! command -v k3s >/dev/null; then
   mkdir -p /var/lib/rancher/k3s/agent/images
   cp k3s-airgap-images.tar.zst /var/lib/rancher/k3s/agent/images/
   install -m 755 k3s /usr/local/bin/k3s
-  # SKIP_DOWNLOAD: use the binary above instead of fetching one. traefik (ingress) isn't needed here
-  INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_EXEC="--disable=traefik" sh ./k3s-install.sh
+  # SKIP_DOWNLOAD: use the binary above instead of fetching one. traefik (ingress) isn't needed here.
+  # TLS_SAN: an extra address for the API certificate, e.g. a cloud VM's public IP, which the VM doesn't see itself
+  INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_EXEC="--disable=traefik${TLS_SAN:+ --tls-san=$TLS_SAN}" \
+    sh ./k3s-install.sh
 fi
 # the API answers a few seconds before the node has registered itself: wait for a node, then for it to be Ready
 wait_for 180 "the node to register" sh -c 'kubectl get nodes -o name | grep -q .'

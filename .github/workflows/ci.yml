@@ -4,18 +4,26 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   lint:
-    # the full flow needs a VM (Multipass), so CI checks the scripts and that the tests load
+    # the full flow needs a VM (Multipass or Google Cloud), so CI checks the scripts, the Terraform and that the
+    # tests load
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
         run: shellcheck scripts/*.sh package/*.sh
+      - uses: hashicorp/setup-terraform@v3
+      - name: terraform fmt and validate
+        run: |
+          terraform -chdir=infra/gcp fmt -check -diff
+          terraform -chdir=infra/gcp init -input=false -backend=false
+          terraform -chdir=infra/gcp validate
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"

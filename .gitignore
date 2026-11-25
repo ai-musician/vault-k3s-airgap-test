@@ -5,3 +5,8 @@ bundle/
 .venv/
 __pycache__/
 .pytest_cache/
+
+# Terraform: provider downloads and state (the state is local: run destroy from this same checkout)
+.terraform/
+*.tfstate
+*.tfstate.*
