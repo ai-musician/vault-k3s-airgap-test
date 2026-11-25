@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    # the full flow needs a VM (Multipass), so CI checks the scripts and that the tests load
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck
+        run: shellcheck scripts/*.sh package/*.sh
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: tests load
+        run: |
+          pip install -r requirements.txt
+          mkdir -p .vm
+          pytest --collect-only -q tests/installed tests/uninstalled

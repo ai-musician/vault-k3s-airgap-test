@@ -1,0 +1,7 @@
+# downloaded package contents (hundreds of MB, rebuilt by `scripts/appliance.sh bundle`)
+bundle/
+# the test VM's SSH key, kubeconfig and Vault unseal key: local and throwaway
+.vm/
+.venv/
+__pycache__/
+.pytest_cache/

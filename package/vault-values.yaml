@@ -1,0 +1,24 @@
+# Vault Helm chart settings for the air-gapped appliance. Image tags come from versions.env (install.sh passes them
+# with --set), so the chart can only use images that are in the bundle.
+injector:
+  enabled: true
+  image:
+    repository: hashicorp/vault-k8s
+    pullPolicy: IfNotPresent   # never pull: the image was imported into containerd from the bundle
+  agentImage:
+    repository: hashicorp/vault
+
+server:
+  image:
+    repository: hashicorp/vault
+    pullPolicy: IfNotPresent
+  standalone:
+    enabled: true              # one Vault server, file storage on a PersistentVolume (k3s local-path)
+  dataStorage:
+    size: 1Gi
+  service:
+    type: NodePort             # the tests on the build machine reach the API at http://<appliance>:30820
+    nodePort: 30820
+
+ui:
+  enabled: false
