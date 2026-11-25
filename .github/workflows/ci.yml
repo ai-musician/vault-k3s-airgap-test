@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: shellcheck
         run: shellcheck scripts/*.sh package/*.sh
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
       - name: terraform fmt and validate
         run: |
           terraform -chdir=infra/gcp fmt -check -diff
